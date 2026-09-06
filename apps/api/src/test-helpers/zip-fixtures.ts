@@ -1,0 +1,111 @@
+import { ZipFile } from 'yazl';
+import zlib from 'node:zlib';
+
+export function buildZipBuffer(entries: { path: string; content: string }[]): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const zip = new ZipFile();
+    for (const entry of entries) {
+      zip.addBuffer(Buffer.from(entry.content, 'utf-8'), entry.path);
+    }
+    const chunks: Buffer[] = [];
+    zip.outputStream.on('data', (chunk: Buffer) => chunks.push(chunk));
+    zip.outputStream.on('end', () => resolve(Buffer.concat(chunks)));
+    zip.outputStream.on('error', reject);
+    zip.end();
+  });
+}
+
+/**
+ * yazl (like most zip writers) validates entry paths and refuses "../" traversal names, so a
+ * malicious zip-slip fixture must be assembled as raw ZIP bytes instead, bypassing that
+ * validation the way a hand-crafted malicious archive would.
+ */
+function buildRawZipWithTraversalEntries(
+  entries: { path: string; content: string }[],
+): Buffer {
+  const localParts: Buffer[] = [];
+  const centralParts: Buffer[] = [];
+  let offset = 0;
+
+  for (const entry of entries) {
+    const nameBuf = Buffer.from(entry.path, 'utf-8');
+    const contentBuf = Buffer.from(entry.content, 'utf-8');
+    const compressed = zlib.deflateRawSync(contentBuf);
+    const crc = zlib.crc32 ? zlib.crc32(contentBuf) : crc32(contentBuf);
+
+    const localHeader = Buffer.alloc(30);
+    localHeader.writeUInt32LE(0x04034b50, 0);
+    localHeader.writeUInt16LE(20, 4);
+    localHeader.writeUInt16LE(0, 6);
+    localHeader.writeUInt16LE(8, 8);
+    localHeader.writeUInt16LE(0, 10);
+    localHeader.writeUInt16LE(0, 12);
+    localHeader.writeUInt32LE(crc >>> 0, 14);
+    localHeader.writeUInt32LE(compressed.length, 18);
+    localHeader.writeUInt32LE(contentBuf.length, 22);
+    localHeader.writeUInt16LE(nameBuf.length, 26);
+    localHeader.writeUInt16LE(0, 28);
+
+    const localEntry = Buffer.concat([localHeader, nameBuf, compressed]);
+    localParts.push(localEntry);
+
+    const centralHeader = Buffer.alloc(46);
+    centralHeader.writeUInt32LE(0x02014b50, 0);
+    centralHeader.writeUInt16LE(20, 4);
+    centralHeader.writeUInt16LE(20, 6);
+    centralHeader.writeUInt16LE(0, 8);
+    centralHeader.writeUInt16LE(8, 10);
+    centralHeader.writeUInt16LE(0, 12);
+    centralHeader.writeUInt16LE(0, 14);
+    centralHeader.writeUInt32LE(crc >>> 0, 16);
+    centralHeader.writeUInt32LE(compressed.length, 20);
+    centralHeader.writeUInt32LE(contentBuf.length, 24);
+    centralHeader.writeUInt16LE(nameBuf.length, 28);
+    centralHeader.writeUInt16LE(0, 30);
+    centralHeader.writeUInt16LE(0, 32);
+    centralHeader.writeUInt16LE(0, 34);
+    centralHeader.writeUInt16LE(0, 36);
+    centralHeader.writeUInt32LE(0, 38);
+    centralHeader.writeUInt32LE(offset, 42);
+
+    centralParts.push(Buffer.concat([centralHeader, nameBuf]));
+    offset += localEntry.length;
+  }
+
+  const centralDirStart = offset;
+  const centralDir = Buffer.concat(centralParts);
+
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(0, 4);
+  eocd.writeUInt16LE(0, 6);
+  eocd.writeUInt16LE(entries.length, 8);
+  eocd.writeUInt16LE(entries.length, 10);
+  eocd.writeUInt32LE(centralDir.length, 12);
+  eocd.writeUInt32LE(centralDirStart, 16);
+  eocd.writeUInt16LE(0, 20);
+
+  return Buffer.concat([...localParts, centralDir, eocd]);
+}
+
+// Minimal CRC32 fallback for Node versions without zlib.crc32 (added in Node 22.x LTS lines).
+function crc32(buf: Buffer): number {
+  let crc = ~0;
+  for (const byte of buf) {
+    crc ^= byte;
+    for (let i = 0; i < 8; i++) {
+      crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+    }
+  }
+  return ~crc;
+}
+
+export function buildMaliciousZipBuffer(): Promise<Buffer> {
+  return Promise.resolve(
+    buildRawZipWithTraversalEntries([
+      { path: 'src/index.ts', content: 'export const x = 1;\n' },
+      { path: '../../etc/passwd', content: 'root:x:0:0::/root:/bin/bash\n' },
+      { path: '../outside.txt', content: 'escaped\n' },
+    ]),
+  );
+}
