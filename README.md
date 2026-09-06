@@ -83,9 +83,29 @@ block. See `.claude/CLAUDE.md` and `apps/api/src/lib/context-builder.ts` /
 
 ## Setup
 
+### Quick start (TL;DR)
+
+```bash
+git clone <this-repo-url>
+cd full-stack-code-analyzer
+npm install
+npm run dev
+```
+
+Then open the URL Vite prints (usually `http://localhost:5173`) in your browser. That's it —
+no API key needed. The app ships with `LLM_MOCK=1` by default, so it runs fully offline with
+realistic, deterministic fake responses instead of calling the real Claude API. You can upload
+a ZIP or paste a public GitHub URL and try every feature for free.
+
+Want to hit the real Claude API instead of the mock? Skip to
+[Environment variables](#environment-variables) below.
+
 ### Prerequisites
-- Node.js 20+
-- npm 10+ (npm workspaces are used for the monorepo — no separate package manager needed)
+- [Node.js](https://nodejs.org/) version 20 or newer — check with `node -v`
+- npm version 10 or newer (comes bundled with Node.js) — check with `npm -v`
+- This repo is a single monorepo (multiple apps in one repository) managed with npm
+  workspaces, so you only ever run one `npm install` at the root — no need to install
+  dependencies separately in each app folder.
 
 ### Install
 
@@ -93,56 +113,74 @@ block. See `.claude/CLAUDE.md` and `apps/api/src/lib/context-builder.ts` /
 npm install
 ```
 
-Installs all workspaces (`apps/web`, `apps/api`, `packages/shared`, `tests-e2e`) from the
-single root lockfile.
+This one command installs dependencies for every app in the repo at once
+(`apps/web` the frontend, `apps/api` the backend, `packages/shared` the shared types, and
+`tests-e2e` the end-to-end tests) using the single lockfile at the repo root.
 
 ### Environment variables
 
-Copy `.env.example` and adjust as needed:
+Environment variables are settings read from a `.env` file that configure how the backend
+runs, without you having to edit code. To customize any of them, copy the example file into
+place and edit it:
 
 ```bash
-cp .env.example apps/api/.env   # or export these in your shell
+cp .env.example apps/api/.env
 ```
+
+If you skip this step entirely, the app still runs — it falls back to the sensible defaults
+listed below (mock LLM, port 3001, local SQLite file, etc).
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `PORT` | `3001` | API server port |
-| `MAX_UPLOAD_BYTES` | `52428800` (50MB) | ZIP upload size cap |
-| `MAX_UPLOAD_FILES` | `2000` | ZIP upload file-count cap |
-| `HIGH_SIGNAL_TOKEN_BUDGET` | `60000` | Token budget for files included in full in the cached context block |
-| `DB_PATH` | `./data/code-analyzer.sqlite` | SQLite file path (use `:memory:` for ephemeral) |
-| `LLM_MOCK` | `1` | **When `1`, the API wires up `MockAnthropicClient` instead of `RealAnthropicClient` — no network calls, no cost, fully deterministic.** This is what local dev, CI, and every automated test run against. Set to `0` and provide a real `ANTHROPIC_API_KEY` only when you intentionally want to hit the live Claude API. |
-| `ANTHROPIC_API_KEY` | *(empty)* | Real Anthropic API key — required only when `LLM_MOCK=0` |
-| `ANTHROPIC_MODEL` | `claude-sonnet-4-5-20250929` | Model id used for real calls |
+| `PORT` | `3001` | The port the API server listens on |
+| `MAX_UPLOAD_BYTES` | `52428800` (50MB) | Largest ZIP file the upload endpoint will accept |
+| `MAX_UPLOAD_FILES` | `2000` | Largest number of files a single ZIP upload may contain |
+| `HIGH_SIGNAL_TOKEN_BUDGET` | `60000` | How many tokens' worth of source files get included in full in the cached context sent to Claude |
+| `DB_PATH` | `./data/code-analyzer.sqlite` | Where the local SQLite database file is stored (set to `:memory:` for a throwaway, non-persistent database) |
+| `LLM_MOCK` | `1` | **The most important one.** When `1` (the default), the API uses a built-in `MockAnthropicClient` that returns realistic canned responses — no network calls, no API key needed, no cost, and fully repeatable results. This is what local development, CI, and every automated test run against. Only set this to `0` if you want to make real calls to Anthropic's Claude API (see below). |
+| `ANTHROPIC_API_KEY` | *(empty)* | Your real Anthropic API key, from [console.anthropic.com](https://console.anthropic.com/). Only required when `LLM_MOCK=0`. |
+| `ANTHROPIC_MODEL` | `claude-sonnet-4-5-20250929` | Which Claude model to call when making real (non-mocked) requests |
 
 ### Run
 
 ```bash
-npm run dev     # starts apps/api (tsx watch) and apps/web (vite) together
+npm run dev
 ```
+
+This single command starts both the backend API (`apps/api`, with auto-restart on file
+changes) and the frontend dev server (`apps/web`, Vite) together. Once it's running, open the
+frontend URL printed in your terminal to use the app.
 
 ### Test
 
-```bash
-npm test        # unit -> integration -> e2e, in that order (the single source of truth for "is the repo green")
-```
-
-Individual layers:
+Running the tests is optional if you just want to try the app, but useful if you're modifying
+the code and want to confirm nothing broke.
 
 ```bash
-npm run test:unit                                        # packages/shared + apps/api + apps/web unit tests
-npm run test:unit --workspace=apps/api                    # api unit tests only
-npm run test:integration --workspace=apps/api             # Supertest integration tests (mocked Anthropic client)
-npm run test:unit --workspace=apps/web                    # Vitest + RTL component tests
-npx playwright install --with-deps chromium               # one-time, before the first e2e run
-npm run test:e2e --workspace=tests-e2e                     # full-app Playwright E2E, LLM_MOCK=1
-npm run lint                                               # eslint across the monorepo
-npm run typecheck                                          # tsc --noEmit across all workspaces
-npm run build                                              # shared -> api -> web, in dependency order
+npm test
 ```
 
-No automated test in this repo ever calls the real Anthropic API — see "Never call the real
-Anthropic API in tests" in `.claude/CLAUDE.md`.
+This runs the entire test suite in order — unit tests, then integration tests, then
+end-to-end (E2E) browser tests — and is the single command that answers "is the repo healthy?"
+
+If you want to run just one layer of tests (for example, while iterating on a specific part of
+the code), use one of these instead:
+
+```bash
+npm run test:unit                                          # fast, no server needed: shared + api + web unit tests
+npm run test:unit --workspace=apps/api                      # backend unit tests only
+npm run test:integration --workspace=apps/api               # backend integration tests (API + mocked Claude client)
+npm run test:unit --workspace=apps/web                      # frontend component tests
+npx playwright install --with-deps chromium                 # one-time setup, only needed before your first E2E run
+npm run test:e2e --workspace=tests-e2e                       # full browser-driven E2E tests (still mocked, no API key needed)
+npm run lint                                                 # style/quality checks across the whole repo
+npm run typecheck                                            # verifies TypeScript types across every app
+npm run build                                                # builds everything for production, in the right order
+```
+
+Good to know: no automated test in this repo ever calls the real Anthropic API, so running
+tests never costs money and never requires an API key — see "Never call the real Anthropic API
+in tests" in `.claude/CLAUDE.md` for the details.
 
 ### Test pyramid
 
@@ -209,36 +247,49 @@ savings than this minimal illustrative run.
 
 ## Deployment
 
-Not yet deployed — the config below is ready to deploy but no live URL exists yet.
+You don't need to deploy anything to try this project locally (see [Quick start](#quick-start-tldr)
+above) — deploying is only needed if you want a public, shareable URL. This app deploys as two
+separate pieces: a static frontend on Vercel and a backend API on Render. Both platforms have
+free tiers, so a demo deployment can cost nothing if you leave `LLM_MOCK=1`.
+
+Not yet deployed — the configuration below is ready to use, but no live URL exists yet.
 
 **Live demo:** _not deployed yet — add the URL here after deploying (see steps below)._
 
 ### Frontend — Vercel
 
-Config: `apps/web/vercel.json` (build command builds `packages/shared` then `apps/web`,
-outputs `dist/`, and rewrites all paths to `index.html` for the client-side router).
+Vercel hosts the static React frontend. The build settings are already defined in
+`apps/web/vercel.json`, so you shouldn't need to configure anything by hand.
 
-1. Import the repo into Vercel, set the project root to `apps/web`.
-2. Vercel picks up `apps/web/vercel.json` automatically for the build/install/output commands.
-3. Set an environment variable for the API base URL the frontend calls (e.g. `VITE_API_URL`)
-   pointing at your deployed Render API URL.
-4. Deploy. Any push to `main` redeploys.
+1. Go to [vercel.com](https://vercel.com/), create a new project, and import this repo.
+2. When asked for the project root / root directory, set it to `apps/web`.
+3. Vercel will automatically detect and use `apps/web/vercel.json`, which already knows how to
+   build `packages/shared` first, then `apps/web`, and serve the result correctly.
+4. Add one environment variable in the Vercel project settings so the frontend knows where
+   your backend lives: `VITE_API_URL` = the URL of your deployed Render API (from the step
+   below).
+5. Click Deploy. From then on, every push to `main` automatically redeploys.
 
 ### Backend — Render
 
-Config: `render.yaml` (Render Blueprint) at the repo root.
+Render hosts the Node.js API and its SQLite database. The service configuration is already
+defined in `render.yaml` at the repo root.
 
-1. In Render, "New +" → "Blueprint", point it at this repo — it reads `render.yaml`
-   automatically and provisions a Node web service (`code-analyzer-api`).
-2. Build command: `npm install && npm run build --workspace=packages/shared && npm run build --workspace=apps/api`.
-   Start command: `npm run start --workspace=apps/api` (runs `node dist/server.js`).
-3. Set the `ANTHROPIC_API_KEY` secret in the Render dashboard (marked `sync: false` in the
-   blueprint so it's never committed) if you want the deployed instance to hit the real API;
-   otherwise leave `LLM_MOCK=1` for a fully free, deterministic demo deployment.
-4. `render.yaml` provisions a 1GB persistent disk mounted at `/data` with `DB_PATH` pointing
-   into it — **this matters because Render's default filesystem is ephemeral and a SQLite file
-   written outside a persistent disk is wiped on every redeploy/restart.**
-5. Health check: `GET /api/health`.
+1. Go to [render.com](https://render.com/), click "New +" → "Blueprint", and point it at this
+   repo. Render reads `render.yaml` automatically and sets up a Node web service named
+   `code-analyzer-api` — no manual configuration needed.
+2. It builds with `npm install && npm run build --workspace=packages/shared && npm run build --workspace=apps/api`,
+   and starts with `npm run start --workspace=apps/api` (which runs `node dist/server.js`).
+3. Optional — only needed if you want the deployed instance to call the real Claude API instead
+   of the mock: set the `ANTHROPIC_API_KEY` secret in the Render dashboard (it's marked
+   `sync: false` in the blueprint, meaning it must be entered manually and is never committed
+   to the repo). If you skip this, leave `LLM_MOCK=1` and you get a fully working, free,
+   deterministic demo.
+4. Nothing else to configure: `render.yaml` already provisions a 1GB persistent disk mounted
+   at `/data`, with `DB_PATH` pointing into it. This matters because Render's regular
+   filesystem is wiped on every redeploy/restart — without a persistent disk, your SQLite
+   database (and every uploaded codebase) would disappear each time you deploy.
+5. Once deployed, you can confirm the API is healthy by visiting `<your-render-url>/api/health`.
 
 ## Milestones (PRD §8)
 
